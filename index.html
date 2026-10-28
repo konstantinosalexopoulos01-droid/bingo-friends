@@ -1,7 +1,7 @@
 <title>Μπίνγκο με φίλους</title>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
-<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline' https://fonts.googleapis.com; font-src https://fonts.gstatic.com; connect-src https://ntfy.sh; img-src data:; media-src https://ntfy.sh; base-uri 'none'; form-action 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline' https://fonts.googleapis.com; font-src https://fonts.gstatic.com; connect-src https://ntfy.sh; img-src data:; media-src blob:; base-uri 'none'; form-action 'none'">
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Comfortaa:wght@600;700&family=Commissioner:wght@400;600;700&display=swap">
 <style>
 html{color-scheme:light dark}
@@ -243,9 +243,11 @@ function connect() {
     try {
       d = JSON.parse(m.data);
       if (d.event !== 'message' || typeof d.id !== 'string' || seen.has(d.id) || log.length >= MAX_LOG) return;
-      if (typeof d.message !== 'string' || d.message.length > MAX_MSG) return;
+      if (typeof d.message !== 'string') return;
+      if (d.message.length > (d.message.startsWith('{"t":"vchunk"') ? 4096 : MAX_MSG)) return;
       ev = JSON.parse(d.message);
     } catch (e) { return; }
+    if (ev && ev.t === 'vchunk') { seen.add(d.id); if (addChunk(d, ev)) apply(); return; }
     seen.add(d.id); log.push({ time: +d.time || 0, id: d.id, att: d.attachment || null, ev: ev && typeof ev === 'object' ? ev : {} }); apply();
   };
   es.onopen = () => setTimeout(() => { if (!live) { live = true; feedShown = feed.length; winShownRound = roundWins().length ? M().round : 0; } if (!players[uid] && myName && !joinSent) { joinSent = true; send({ t: 'join', name: myName }); } }, 1500);
@@ -291,7 +293,29 @@ function announce() {
 
 /* Chat: κείμενο και ηχητικά. Τα ηχητικά ανεβαίνουν ως συνημμένο στο ntfy.sh και παίζονται με native player. */
 let chatShown = new Set(), unread = 0, rec = null;
-const FILE_PREFIX = HOST + 'file/';
+const localUrls = new Set(), voiceParts = new Map();
+const VOICE_MAX_BYTES = 90 * 1024, CHUNK_B64 = 3000, VOICE_SECS = 12;
+const AUDIO_RE = /^audio\/(mp4|webm|ogg|mpeg|aac|x-m4a)(;.*)?$/;
+
+/* Τα ηχητικά ταξιδεύουν ως μικρά κομμάτια (vchunk) και ξαναενώνονται σε κάθε συσκευή. */
+function addChunk(d, ev) {
+  if (typeof ev.u !== 'string' || !ID_RE.test(ev.u) || typeof ev.vid !== 'string' || !/^[a-z0-9]{6,16}$/.test(ev.vid)) return false;
+  if (!Number.isInteger(ev.i) || !Number.isInteger(ev.n) || ev.n < 1 || ev.n > 40 || ev.i < 0 || ev.i >= ev.n) return false;
+  if (typeof ev.d !== 'string' || ev.d.length > 3600 || !/^[A-Za-z0-9+/=]*$/.test(ev.d) || typeof ev.mime !== 'string' || !AUDIO_RE.test(ev.mime)) return false;
+  const key = ev.u + '|' + ev.vid;
+  if (!voiceParts.has(key)) { if (voiceParts.size >= 60) return false; voiceParts.set(key, { n: ev.n, mime: ev.mime, parts: [], got: 0, done: false }); }
+  const v = voiceParts.get(key);
+  if (v.done || v.n !== ev.n || v.parts[ev.i] !== undefined) return false;
+  v.parts[ev.i] = ev.d; v.got++;
+  if (v.got < v.n) return false;
+  let bytes;
+  try { bytes = Uint8Array.from(atob(v.parts.join('')), c => c.charCodeAt(0)); } catch (e) { v.done = true; return false; }
+  v.done = true;
+  const url = URL.createObjectURL(new Blob([bytes], { type: v.mime.split(';')[0] }));
+  localUrls.add(url);
+  log.push({ time: +d.time || 0, id: 'v:' + key, att: { url, type: v.mime }, ev: { t: 'chat', voice: 1, u: ev.u, name: ev.name, ts: +ev.ts || 0 } });
+  return true;
+}
 const chatNote = t => { $('#chatNote').textContent = t || ''; };
 const asciiJson = o => JSON.stringify(o).replace(/[\u0080-\uffff]/g, c => '\\u' + c.charCodeAt(0).toString(16).padStart(4, '0'));
 
@@ -328,7 +352,7 @@ function renderChat() {
     if (typeof ev.u !== 'string' || !ID_RE.test(ev.u)) continue;
     if (ev.voice) {
       const a = x.att;
-      if (!a || typeof a.url !== 'string' || !a.url.startsWith(FILE_PREFIX) || !/^audio\//.test(String(a.type || ''))) continue;
+      if (!a || !localUrls.has(a.url)) continue;
     } else if (typeof ev.text !== 'string' || !ev.text.trim()) continue;
     else ev.text = ev.text.slice(0, 200);
     list.appendChild(chatNode(x, ev)); added++;
@@ -343,12 +367,26 @@ function sendChatText() {
   i.value = ''; chatNote('');
   send({ t: 'chat', text: t, name: myName });
 }
-function sendVoice(blob) {
-  const ext = /mp4/.test(blob.type) ? 'm4a' : /ogg/.test(blob.type) ? 'ogg' : 'webm';
-  const meta = asciiJson({ t: 'chat', voice: 1, u: uid, name: myName, ts: Date.now() });
-  return fetch(HOST + topic(), { method: 'PUT', headers: { Filename: 'voice.' + ext, Message: meta }, body: blob })
-    .then(r => { if (!r.ok) throw new Error('HTTP ' + r.status); chatNote(''); })
-    .catch(e => chatNote('Δεν στάλθηκε το ηχητικό (' + (e && e.message === 'Failed to fetch' ? 'δίκτυο ή άδεια από τον server' : (e && e.message) || '?') + ', ' + Math.round(blob.size / 1024) + 'KB, ' + (blob.type || '?') + ').'));
+function toB64(buf) {
+  const u = new Uint8Array(buf); let bin = '';
+  for (let k = 0; k < u.length; k += 8192) bin += String.fromCharCode.apply(null, u.subarray(k, k + 8192));
+  return btoa(bin);
+}
+async function sendVoice(blob) {
+  if (blob.size > VOICE_MAX_BYTES) { chatNote('Το ηχητικό βγήκε πολύ μεγάλο (' + Math.round(blob.size / 1024) + 'KB). Πες το πιο σύντομα, έως ' + VOICE_SECS + ' δευτερόλεπτα.'); return; }
+  const b64 = toB64(await blob.arrayBuffer());
+  const n = Math.ceil(b64.length / CHUNK_B64), vid = Math.random().toString(36).slice(2, 10) + Date.now().toString(36).slice(-4);
+  const mime = (blob.type || 'audio/webm').slice(0, 40);
+  try {
+    for (let k = 0; k < n; k++) {
+      const r = await fetch(HOST + topic(), { method: 'POST', body: JSON.stringify({ t: 'vchunk', vid, i: k, n, mime, name: myName, d: b64.slice(k * CHUNK_B64, (k + 1) * CHUNK_B64), u: uid, ts: Date.now() }) });
+      if (!r.ok) throw new Error('HTTP ' + r.status);
+      chatNote('Αποστολή ' + (k + 1) + '/' + n + '…');
+    }
+    chatNote('');
+  } catch (e) {
+    chatNote('Δεν στάλθηκε το ηχητικό (' + (e && e.message === 'Failed to fetch' ? 'δίκτυο' : (e && e.message) || '?') + ', ' + Math.round(blob.size / 1024) + 'KB).');
+  }
 }
 function setRecUI(on, secs) {
   const b = $('#chatRec');
@@ -362,9 +400,9 @@ async function toggleRec() {
   try { stream = await navigator.mediaDevices.getUserMedia({ audio: true }); }
   catch (e) { chatNote('Δεν δόθηκε πρόσβαση στο μικρόφωνο (' + ((e && e.name) || '?') + '). Άνοιξε τις ρυθμίσεις του browser και επίτρεψέ την.'); return; }
   const mime = ['audio/mp4', 'audio/webm;codecs=opus', 'audio/webm', 'audio/ogg;codecs=opus'].find(m => MediaRecorder.isTypeSupported(m)) || '';
-  const mr = new MediaRecorder(stream, mime ? { mimeType: mime, audioBitsPerSecond: 24000 } : { audioBitsPerSecond: 24000 });
+  const mr = new MediaRecorder(stream, mime ? { mimeType: mime, audioBitsPerSecond: 16000 } : { audioBitsPerSecond: 16000 });
   const chunks = []; let secs = 0, cancelled = false;
-  const tick = setInterval(() => { secs++; setRecUI(true, secs); if (secs >= 30) mr.stop(); }, 1000);
+  const tick = setInterval(() => { secs++; setRecUI(true, secs); if (secs >= VOICE_SECS) mr.stop(); }, 1000);
   mr.ondataavailable = e => { if (e.data && e.data.size) chunks.push(e.data); };
   mr.onstop = () => {
     clearInterval(tick); stream.getTracks().forEach(t => t.stop());
