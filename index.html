@@ -1,7 +1,7 @@
 <title>Μπίνγκο με φίλους</title>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
-<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline' https://fonts.googleapis.com; font-src https://fonts.gstatic.com; connect-src https://ntfy.sh; img-src data:; base-uri 'none'; form-action 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline' https://fonts.googleapis.com; font-src https://fonts.gstatic.com; connect-src https://ntfy.sh; img-src data:; media-src https://ntfy.sh; base-uri 'none'; form-action 'none'">
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Comfortaa:wght@600;700&family=Commissioner:wght@400;600;700&display=swap">
 <style>
 html{color-scheme:light dark}
@@ -64,6 +64,21 @@ input[type=text],select{font:inherit;color:var(--ink);background:var(--bg);borde
 .notice{color:var(--warn);font-size:14px}
 .called{display:grid;grid-template-columns:repeat(9,1fr);gap:4px}
 .called .chipnum{font-size:12px;border-radius:6px}
+#chat summary{font:700 17px/1.2 var(--font-display);cursor:pointer;display:flex;gap:8px;align-items:center}
+#chat summary .badge{background:var(--dauber);color:#fff;border-radius:99px;font:700 12px var(--font-body);padding:2px 8px}
+#chat[open] summary{margin-bottom:12px}
+#chatList{display:flex;flex-direction:column;gap:8px;max-height:280px;overflow-y:auto;overflow-x:hidden}
+#chatList:empty::before{content:"Κανένα μήνυμα ακόμα. Γράψε κάτι μόνο αν θέλεις.";color:var(--muted);font-size:14px}
+.cmsg{background:var(--bg);border:1px solid var(--line);border-radius:12px;padding:8px 10px;max-width:92%;align-self:flex-start;min-width:0;overflow-wrap:anywhere}
+.cmsg.mine{align-self:flex-end;border-color:var(--accent)}
+.cmsg b{display:block;font-size:12px;color:var(--muted);font-weight:600}
+.cmsg audio{width:100%;min-width:200px;max-width:100%;height:36px;margin-top:4px;display:block}
+.cmsg .err{color:var(--warn);font-size:12px}
+.chatrow{display:flex;gap:8px;margin-top:12px}
+.chatrow input{flex:1;min-width:0}
+.chatrow .btn{flex:none;padding-inline:12px}
+.btn.rec{background:var(--dauber);border-color:var(--dauber);color:#fff}
+#chatNote{font-size:13px;color:var(--warn);min-height:0}
 #toasts{position:fixed;left:0;right:0;top:0;z-index:50;display:flex;flex-direction:column;align-items:center;gap:8px;pointer-events:none;
   padding:calc(env(safe-area-inset-top,0px) + 10px) max(16px,env(safe-area-inset-right,0px)) 0 max(16px,env(safe-area-inset-left,0px))}
 .toast{background:var(--dauber);color:#fff;font:700 20px/1.25 var(--font-display);padding:12px 20px;border-radius:14px;text-align:center;
@@ -100,6 +115,17 @@ input[type=text],select{font:inherit;color:var(--ink);background:var(--bg);borde
   </section>
 
   <div id="app"><p class="muted">Φόρτωση…</p></div>
+
+  <details class="panel" id="chat" hidden open>
+    <summary>Chat <span class="badge" id="chatBadge" hidden></span></summary>
+    <div id="chatList" aria-live="polite"></div>
+    <div id="chatNote"></div>
+    <div class="chatrow">
+      <input type="text" id="chatText" maxlength="200" placeholder="Γράψε μήνυμα (προαιρετικό)" autocomplete="off" aria-label="Μήνυμα">
+      <button class="btn primary" id="chatSend">Στείλε</button>
+      <button class="btn" id="chatRec" aria-label="Ηχητικό μήνυμα">Ηχητικό</button>
+    </div>
+  </details>
 </main>
 
 <script>
@@ -208,7 +234,7 @@ function apply() {
   const S = reduce(log.map(x => x.ev));
   meta = { round: S.round, status: S.status, target: S.target, order: S.order };
   players = S.players; calls = S.calls; wins = S.wins; feed = S.feed;
-  syncCardRound(); checkWin(); announce(); render();
+  syncCardRound(); checkWin(); announce(); render(); renderChat();
 }
 function connect() {
   const es = new EventSource(HOST + topic() + '/sse?since=all');
@@ -220,7 +246,7 @@ function connect() {
       if (typeof d.message !== 'string' || d.message.length > MAX_MSG) return;
       ev = JSON.parse(d.message);
     } catch (e) { return; }
-    seen.add(d.id); log.push({ time: +d.time || 0, id: d.id, ev: ev && typeof ev === 'object' ? ev : {} }); apply();
+    seen.add(d.id); log.push({ time: +d.time || 0, id: d.id, att: d.attachment || null, ev: ev && typeof ev === 'object' ? ev : {} }); apply();
   };
   es.onopen = () => setTimeout(() => { if (!live) { live = true; feedShown = feed.length; winShownRound = roundWins().length ? M().round : 0; } if (!players[uid] && myName && !joinSent) { joinSent = true; send({ t: 'join', name: myName }); } }, 1500);
 }
@@ -263,7 +289,97 @@ function announce() {
   }
 }
 
+/* Chat: κείμενο και ηχητικά. Τα ηχητικά ανεβαίνουν ως συνημμένο στο ntfy.sh και παίζονται με native player. */
+let chatShown = new Set(), unread = 0, rec = null;
+const FILE_PREFIX = HOST + 'file/';
+const chatNote = t => { $('#chatNote').textContent = t || ''; };
+const asciiJson = o => JSON.stringify(o).replace(/[\u0080-\uffff]/g, c => '\\u' + c.charCodeAt(0).toString(16).padStart(4, '0'));
+
+function chatNode(x, ev) {
+  const mine = ev.u === uid;
+  const box = document.createElement('div');
+  box.className = 'cmsg' + (mine ? ' mine' : '');
+  const who = document.createElement('b');
+  who.textContent = mine ? 'Εσύ' : ((players[ev.u] && players[ev.u].name) || String(ev.name || 'Παίκτης').slice(0, 14));
+  box.appendChild(who);
+  if (ev.voice) {
+    const a = document.createElement('audio');
+    a.controls = true; a.preload = 'none'; a.src = x.att.url;
+    a.addEventListener('error', () => {
+      if (box.querySelector('.err')) return;
+      const er = document.createElement('div'); er.className = 'err';
+      er.textContent = 'Δεν παίζεται σε αυτή τη συσκευή ή έληξε';
+      box.appendChild(er);
+    });
+    box.appendChild(a);
+  } else {
+    const t = document.createElement('span'); t.textContent = ev.text; box.appendChild(t);
+  }
+  return box;
+}
+function renderChat() {
+  const list = $('#chatList');
+  const near = list.scrollHeight - list.scrollTop - list.clientHeight < 60;
+  let added = 0;
+  for (const x of log) {
+    const ev = x.ev;
+    if (ev.t !== 'chat' || chatShown.has(x.id)) continue;
+    chatShown.add(x.id);
+    if (typeof ev.u !== 'string' || !ID_RE.test(ev.u)) continue;
+    if (ev.voice) {
+      const a = x.att;
+      if (!a || typeof a.url !== 'string' || !a.url.startsWith(FILE_PREFIX) || !/^audio\//.test(String(a.type || ''))) continue;
+    } else if (typeof ev.text !== 'string' || !ev.text.trim()) continue;
+    else ev.text = ev.text.slice(0, 200);
+    list.appendChild(chatNode(x, ev)); added++;
+    if (live && ev.u !== uid && !$('#chat').open) unread++;
+  }
+  if (added && near) list.scrollTop = list.scrollHeight;
+  const b = $('#chatBadge'); b.hidden = !unread; b.textContent = unread;
+}
+function sendChatText() {
+  const i = $('#chatText'), t = i.value.trim().slice(0, 200);
+  if (!t) return;
+  i.value = ''; chatNote('');
+  send({ t: 'chat', text: t, name: myName });
+}
+function sendVoice(blob) {
+  const ext = /mp4/.test(blob.type) ? 'm4a' : /ogg/.test(blob.type) ? 'ogg' : 'webm';
+  const meta = asciiJson({ t: 'chat', voice: 1, u: uid, name: myName, ts: Date.now() });
+  return fetch(HOST + topic(), { method: 'PUT', headers: { Filename: 'voice.' + ext, Message: meta }, body: blob })
+    .then(r => { if (!r.ok) throw new Error('http'); chatNote(''); })
+    .catch(() => chatNote('Δεν στάλθηκε το ηχητικό. Δοκίμασε ξανά.'));
+}
+function setRecUI(on, secs) {
+  const b = $('#chatRec');
+  b.classList.toggle('rec', on);
+  b.textContent = on ? 'Στείλε ηχητικό (' + secs + 'δ)' : 'Ηχητικό';
+}
+async function toggleRec() {
+  if (rec) { rec.stop(); return; }
+  if (!navigator.mediaDevices || !window.MediaRecorder) { chatNote('Αυτός ο browser δεν υποστηρίζει ηχογράφηση.'); return; }
+  let stream;
+  try { stream = await navigator.mediaDevices.getUserMedia({ audio: true }); }
+  catch (e) { chatNote('Χρειάζεται άδεια για το μικρόφωνο.'); return; }
+  const mime = ['audio/mp4', 'audio/webm;codecs=opus', 'audio/webm', 'audio/ogg;codecs=opus'].find(m => MediaRecorder.isTypeSupported(m)) || '';
+  const mr = new MediaRecorder(stream, mime ? { mimeType: mime, audioBitsPerSecond: 24000 } : { audioBitsPerSecond: 24000 });
+  const chunks = []; let secs = 0, cancelled = false;
+  const tick = setInterval(() => { secs++; setRecUI(true, secs); if (secs >= 30) mr.stop(); }, 1000);
+  mr.ondataavailable = e => { if (e.data && e.data.size) chunks.push(e.data); };
+  mr.onstop = () => {
+    clearInterval(tick); stream.getTracks().forEach(t => t.stop());
+    rec = null; setRecUI(false);
+    if (!cancelled && chunks.length) sendVoice(new Blob(chunks, { type: mr.mimeType || mime || 'audio/webm' }));
+  };
+  rec = { stop: () => { if (mr.state !== 'inactive') mr.stop(); }, cancel: () => { cancelled = true; if (mr.state !== 'inactive') mr.stop(); } };
+  mr.start(); setRecUI(true, 0);
+}
+
 function boot() {
+  $('#chatSend').onclick = sendChatText;
+  $('#chatText').addEventListener('keydown', e => { if (e.key === 'Enter') sendChatText(); });
+  $('#chatRec').onclick = toggleRec;
+  $('#chat').addEventListener('toggle', () => { if ($('#chat').open) { unread = 0; renderChat(); } });
   $('#over').addEventListener('click', () => { $('#over').hidden = true; });
   $('#app').addEventListener('click', onClick);
   $('#app').addEventListener('change', onChange);
@@ -286,6 +402,7 @@ function boot() {
 function start() {
   if (started) return; started = true;
   $('#join').hidden = true;
+  $('#chat').hidden = false;
   try {
     const v = JSON.parse(lsGet(cardKey()) || 'null');
     if (v && Array.isArray(v.cells) && v.cells.length === N) card = { round: v.round, cells: v.cells.slice() };
