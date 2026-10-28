@@ -64,9 +64,29 @@ input[type=text],select{font:inherit;color:var(--ink);background:var(--bg);borde
 .notice{color:var(--warn);font-size:14px}
 .called{display:grid;grid-template-columns:repeat(9,1fr);gap:4px}
 .called .chipnum{font-size:12px;border-radius:6px}
-@media (prefers-reduced-motion:reduce){.bar i{transition:none}}
+#toasts{position:fixed;left:0;right:0;top:0;z-index:50;display:flex;flex-direction:column;align-items:center;gap:8px;pointer-events:none;
+  padding:calc(env(safe-area-inset-top,0px) + 10px) max(16px,env(safe-area-inset-right,0px)) 0 max(16px,env(safe-area-inset-left,0px))}
+.toast{background:var(--dauber);color:#fff;font:700 20px/1.25 var(--font-display);padding:12px 20px;border-radius:14px;text-align:center;
+  max-width:100%;box-shadow:0 8px 24px rgba(0,0,0,.28);animation:pop .55s cubic-bezier(.2,1.5,.4,1) both,out .4s 3.4s ease-in forwards}
+.toast.self{background:var(--accent);color:var(--accent-ink)}
+.toast small{display:block;font:600 13px var(--font-body);opacity:.9;margin-top:2px}
+@keyframes pop{from{transform:translateY(-50px) scale(.6);opacity:0}to{transform:none;opacity:1}}
+@keyframes out{to{opacity:0;transform:translateY(-24px)}}
+#over{position:fixed;inset:0;z-index:60;display:grid;place-items:center;background:rgba(8,16,20,.82);overflow:hidden;
+  padding:24px max(16px,env(safe-area-inset-right,0px)) 24px max(16px,env(safe-area-inset-left,0px));animation:fade .3s both}
+#over[hidden]{display:none}
+#over .msg{color:#fff;text-align:center;font:700 clamp(34px,11vw,56px)/1.15 var(--font-display);animation:boom 1s cubic-bezier(.2,1.5,.4,1) both,pulse 1.2s 1s ease-in-out infinite;position:relative;z-index:1;max-width:100%;overflow-wrap:anywhere}
+#over .sub{color:#fff;opacity:.8;font:600 15px var(--font-body);margin-top:14px;text-align:center;position:relative;z-index:1}
+#over i{position:absolute;top:-24px;width:10px;height:16px;border-radius:2px;animation:fall linear infinite}
+@keyframes fade{from{opacity:0}to{opacity:1}}
+@keyframes boom{from{transform:scale(.2) rotate(-8deg);opacity:0}to{transform:none;opacity:1}}
+@keyframes pulse{50%{transform:scale(1.06)}}
+@keyframes fall{to{transform:translateY(110vh) rotate(720deg)}}
+@media (prefers-reduced-motion:reduce){.bar i{transition:none}.toast,#over .msg,#over,#over i{animation:none}.toast{opacity:1}#over i{display:none}}
 </style>
 
+<div id="toasts" aria-live="polite"></div>
+<div id="over" hidden role="alertdialog" aria-live="assertive"><div><div class="msg" id="overMsg"></div><div class="sub">Πάτα για να κλείσει</div></div></div>
 <main>
   <div class="top"><h1>Μπίνγκο</h1><span class="round" id="round"></span></div>
 
@@ -135,7 +155,7 @@ const ID_RE = /^[A-Za-z0-9_-]{1,40}$/, MAX_PLAYERS = 12, MAX_LOG = 3000, MAX_MSG
 const topic = () => 'mpingko-' + room;
 
 function reduce(evs) {
-  const S = { round: 1, status: 'lobby', target: 6, order: [], players: Object.create(null), calls: [], wins: [] };
+  const S = { round: 1, status: 'lobby', target: 6, order: [], players: Object.create(null), calls: [], wins: [], lines: Object.create(null), feed: [] };
   let jc = 0;
   const roundWon = () => S.wins.some(w => w.round === S.round);
   for (const e of evs) {
@@ -151,7 +171,7 @@ function reduce(evs) {
     } else if (e.t === 'start') {
       if (S.status !== 'lobby') continue;
       const order = Object.entries(p).filter(([, x]) => x.readyRound === S.round).sort((a, b) => a[1].joinedAt - b[1].joinedAt).map(([id]) => id);
-      if (order.length >= 2) { S.order = order; S.status = 'playing'; }
+      if (order.length >= 2) { S.order = order; S.status = 'playing'; S.lines = Object.create(null); }
     } else if (e.t === 'call') {
       if (S.status !== 'playing' || roundWon()) continue;
       const rc = S.calls.filter(c => c.round === S.round);
@@ -165,14 +185,20 @@ function reduce(evs) {
     } else if (e.t === 'win') {
       if (S.status === 'playing' && S.order.includes(e.u) && !S.wins.some(w => w.round === S.round && w.id === e.u))
         S.wins.push({ round: S.round, id: e.u, name: (p[e.u] || {}).name || '' });
+    } else if (e.t === 'lines') {
+      if (S.status === 'playing' && !roundWon() && S.order.includes(e.u) && Number.isInteger(e.v) && e.v >= 1 && e.v <= LINES.length && e.v > (S.lines[e.u] || 0)) {
+        S.lines[e.u] = e.v;
+        S.feed.push({ round: S.round, id: e.u, name: p[e.u].name, v: e.v });
+      }
     } else if (e.t === 'newround') {
-      if (roundWon()) { S.round++; S.status = 'lobby'; S.order = []; }
+      if (roundWon()) { S.round++; S.status = 'lobby'; S.order = []; S.lines = Object.create(null); }
     }
   }
   return S;
 }
 
-let log = [], seen = new Set(), joinSent = false, winSentFor = 0;
+let log = [], seen = new Set(), joinSent = false, winSentFor = 0, linesSent = 0, linesRound = 0, feed = [];
+let live = false, feedShown = 0, winShownRound = 0, overTimer = null;
 function send(ev) {
   return fetch(HOST + topic(), { method: 'POST', body: JSON.stringify(Object.assign({}, ev, { u: uid, ts: Date.now() })) })
     .catch(() => { $('#round').textContent = 'Χωρίς σύνδεση, δοκίμασε ξανά'; });
@@ -181,8 +207,8 @@ function apply() {
   log.sort((a, b) => a.time - b.time || ((+a.ev.ts || 0) - (+b.ev.ts || 0)) || (a.id < b.id ? -1 : 1));
   const S = reduce(log.map(x => x.ev));
   meta = { round: S.round, status: S.status, target: S.target, order: S.order };
-  players = S.players; calls = S.calls; wins = S.wins;
-  syncCardRound(); checkWin(); render();
+  players = S.players; calls = S.calls; wins = S.wins; feed = S.feed;
+  syncCardRound(); checkWin(); announce(); render();
 }
 function connect() {
   const es = new EventSource(HOST + topic() + '/sse?since=all');
@@ -196,10 +222,49 @@ function connect() {
     } catch (e) { return; }
     seen.add(d.id); log.push({ time: +d.time || 0, id: d.id, ev: ev && typeof ev === 'object' ? ev : {} }); apply();
   };
-  es.onopen = () => setTimeout(() => { if (!players[uid] && myName && !joinSent) { joinSent = true; send({ t: 'join', name: myName }); } }, 1500);
+  es.onopen = () => setTimeout(() => { if (!live) { live = true; feedShown = feed.length; winShownRound = roundWins().length ? M().round : 0; } if (!players[uid] && myName && !joinSent) { joinSent = true; send({ t: 'join', name: myName }); } }, 1500);
+}
+
+function toast(html, self) {
+  const t = document.createElement('div');
+  t.className = 'toast' + (self ? ' self' : '');
+  t.innerHTML = html;
+  $('#toasts').appendChild(t);
+  setTimeout(() => t.remove(), 4000);
+  try { navigator.vibrate && navigator.vibrate(self ? 60 : [60, 40, 60]); } catch (e) {}
+}
+function showOver(text) {
+  const o = $('#over'); $('#overMsg').textContent = text;
+  o.querySelectorAll('i').forEach(i => i.remove());
+  const colors = ['#ff6b9a', '#3cc0cc', '#f2c14e', '#69db7c', '#ffffff'];
+  for (let k = 0; k < 36; k++) {
+    const c = document.createElement('i');
+    c.style.cssText = 'left:' + Math.random() * 100 + '%;background:' + colors[k % colors.length] + ';animation-duration:' + (2 + Math.random() * 2.5) + 's;animation-delay:' + Math.random() * 1.5 + 's';
+    o.appendChild(c);
+  }
+  o.hidden = false;
+  clearTimeout(overTimer); overTimer = setTimeout(() => { o.hidden = true; }, 7000);
+  try { navigator.vibrate && navigator.vibrate([120, 60, 120, 60, 200]); } catch (e) {}
+}
+function announce() {
+  if (!live) return;
+  const m = M();
+  const w = roundWins();
+  if (w.length && winShownRound !== m.round) {
+    winShownRound = m.round;
+    showOver(w.some(x => x.id === uid) ? 'Σας γάμησε!' : 'Ο ' + (w[0].name || 'Παίκτης') + ' γαμάει!');
+  }
+  for (; feedShown < feed.length; feedShown++) {
+    const f = feed[feedShown];
+    if (f.round !== m.round || f.v >= m.target) continue;
+    const lbl = f.v + (f.v === 1 ? ' γραμμή' : ' γραμμές') + ' από ' + m.target;
+    if (f.id === uid) toast('Γραμμή! <small>' + esc(lbl) + '</small>', true);
+    else toast('Ο ' + esc(f.name || 'Παίκτης') + ' γαμάει! <small>' + esc(lbl) + '</small>', false);
+  }
 }
 
 function boot() {
+  $('#over').addEventListener('click', () => { $('#over').hidden = true; });
   $('#app').addEventListener('click', onClick);
   $('#app').addEventListener('change', onChange);
   $('#nick').value = myName;
@@ -243,7 +308,10 @@ function checkWin() {
   if (!meta || m.status !== 'playing' || !m.order.includes(uid) || card.round !== m.round) return;
   if (roundWins().some(w => w.id === uid)) return;
   const called = new Set(roundCalls().map(c => c.n).filter(Boolean));
-  if (lineCount(card.cells, called) >= m.target && winSentFor !== m.round) {
+  const lc = lineCount(card.cells, called);
+  if (linesRound !== m.round) { linesRound = m.round; linesSent = 0; }
+  if (lc > linesSent && lc < m.target) { linesSent = lc; send({ t: 'lines', v: lc }); }
+  if (lc >= m.target && winSentFor !== m.round) {
     winSentFor = m.round;
     send({ t: 'win' });
   }
