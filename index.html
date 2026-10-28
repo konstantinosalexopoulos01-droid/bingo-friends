@@ -347,8 +347,8 @@ function sendVoice(blob) {
   const ext = /mp4/.test(blob.type) ? 'm4a' : /ogg/.test(blob.type) ? 'ogg' : 'webm';
   const meta = asciiJson({ t: 'chat', voice: 1, u: uid, name: myName, ts: Date.now() });
   return fetch(HOST + topic(), { method: 'PUT', headers: { Filename: 'voice.' + ext, Message: meta }, body: blob })
-    .then(r => { if (!r.ok) throw new Error('http'); chatNote(''); })
-    .catch(() => chatNote('Δεν στάλθηκε το ηχητικό. Δοκίμασε ξανά.'));
+    .then(r => { if (!r.ok) throw new Error('HTTP ' + r.status); chatNote(''); })
+    .catch(e => chatNote('Δεν στάλθηκε το ηχητικό (' + (e && e.message === 'Failed to fetch' ? 'δίκτυο ή άδεια από τον server' : (e && e.message) || '?') + ', ' + Math.round(blob.size / 1024) + 'KB, ' + (blob.type || '?') + ').'));
 }
 function setRecUI(on, secs) {
   const b = $('#chatRec');
@@ -360,7 +360,7 @@ async function toggleRec() {
   if (!navigator.mediaDevices || !window.MediaRecorder) { chatNote('Αυτός ο browser δεν υποστηρίζει ηχογράφηση.'); return; }
   let stream;
   try { stream = await navigator.mediaDevices.getUserMedia({ audio: true }); }
-  catch (e) { chatNote('Χρειάζεται άδεια για το μικρόφωνο.'); return; }
+  catch (e) { chatNote('Δεν δόθηκε πρόσβαση στο μικρόφωνο (' + ((e && e.name) || '?') + '). Άνοιξε τις ρυθμίσεις του browser και επίτρεψέ την.'); return; }
   const mime = ['audio/mp4', 'audio/webm;codecs=opus', 'audio/webm', 'audio/ogg;codecs=opus'].find(m => MediaRecorder.isTypeSupported(m)) || '';
   const mr = new MediaRecorder(stream, mime ? { mimeType: mime, audioBitsPerSecond: 24000 } : { audioBitsPerSecond: 24000 });
   const chunks = []; let secs = 0, cancelled = false;
@@ -369,9 +369,13 @@ async function toggleRec() {
   mr.onstop = () => {
     clearInterval(tick); stream.getTracks().forEach(t => t.stop());
     rec = null; setRecUI(false);
-    if (!cancelled && chunks.length) sendVoice(new Blob(chunks, { type: mr.mimeType || mime || 'audio/webm' }));
+    if (cancelled) return;
+    if (!chunks.length) { chatNote('Δεν ηχογραφήθηκε ήχος. Δοκίμασε ξανά και μίλα για λίγο.'); return; }
+    chatNote('Αποστολή…');
+    sendVoice(new Blob(chunks, { type: mr.mimeType || mime || 'audio/webm' }));
   };
   rec = { stop: () => { if (mr.state !== 'inactive') mr.stop(); }, cancel: () => { cancelled = true; if (mr.state !== 'inactive') mr.stop(); } };
+  mr.onerror = e => chatNote('Σφάλμα ηχογράφησης (' + ((e.error && e.error.name) || '?') + ')');
   mr.start(); setRecUI(true, 0);
 }
 
