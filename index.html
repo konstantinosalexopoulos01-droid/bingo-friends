@@ -83,7 +83,7 @@ input[type=text],select{font:inherit;color:var(--ink);background:var(--bg);borde
 </main>
 
 <script>
-const SIZE = 6, N = SIZE * SIZE, TARGETS = [1, 3, 6];
+const SIZE = 6, N = SIZE * SIZE, POOL = 45, TARGETS = [1, 3, 6];
 const $ = s => document.querySelector(s);
 const esc = s => String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const pad = n => String(n).padStart(3, '0');
@@ -158,7 +158,7 @@ function reduce(evs) {
       if (e.n === 0) {
         if (!p[e.u]) continue;
       } else {
-        if (!Number.isInteger(e.n) || e.n < 1 || e.n > N) continue;
+        if (!Number.isInteger(e.n) || e.n < 1 || e.n > POOL) continue;
         if (S.order[rc.length % S.order.length] !== e.u || rc.some(c => c.n === e.n)) continue;
       }
       S.calls.push({ round: S.round, seq: rc.length, n: e.n, by: e.u });
@@ -292,12 +292,12 @@ function render() {
     const ready = ordered().filter(([, p]) => p.readyRound === m.round);
     const full = card.cells.every(Boolean);
     h += '<div class="panel"><h2>Φτιάξε την κάρτα σου</h2>';
-    h += '<p class="muted">Πάτα ένα τετράγωνο και μετά έναν αριθμό από κάτω. Βάλε τους αριθμούς 1–' + N + ' όπου θέλεις. Οι άλλοι δεν βλέπουν την κάρτα σου.</p>';
+    h += '<p class="muted">Πάτα ένα τετράγωνο και μετά έναν αριθμό από κάτω. Διάλεξε ' + N + ' αριθμούς από το 1 έως το ' + POOL + ' και βάλε τους όπου θέλεις. Οι άλλοι δεν βλέπουν την κάρτα σου.</p>';
     h += renderCard(iReady ? 'play' : 'build', new Set());
     if (!iReady) {
       const used = new Set(card.cells);
       h += '<div class="pool">';
-      for (let n = 1; n <= N; n++) if (!used.has(n)) h += '<button class="pick" data-act="put" data-n="' + n + '">' + n + '</button>';
+      for (let n = 1; n <= POOL; n++) if (!used.has(n)) h += '<button class="pick" data-act="put" data-n="' + n + '">' + n + '</button>';
       h += '</div>';
       h += '<div class="row"><button class="btn" data-act="random">Τυχαία συμπλήρωση</button><button class="btn" data-act="clear">Καθάρισμα</button>' +
         '<button class="btn primary grow" data-act="ready"' + (full ? '' : ' disabled') + '>Είμαι έτοιμος</button></div>';
@@ -313,7 +313,9 @@ function render() {
     const lines = inGame ? lineCount(card.cells, calledSet) : 0;
     const last = callsR.filter(c => c.n).slice(-1)[0];
     if (win.length) {
-      h += '<div class="panel win"><div class="big">Νίκη: ' + win.map(w => esc(w.name || nm(w.id))).join(', ') + '</div>' +
+      const iWon = win.some(w => w.id === uid);
+      h += '<div class="panel win">' + (iWon ? '<div class="big">Σας γάμησε!</div>' : '') +
+        win.filter(w => w.id !== uid).map(w => '<div class="big">Ο ' + esc(w.name || nm(w.id)) + ' γαμάει!</div>').join('') +
         '<button class="btn primary" data-act="newround">Νέος γύρος</button></div>';
     } else {
       const mine = turnId === uid;
@@ -322,7 +324,7 @@ function render() {
         '<div class="muted">' + (last ? 'Τελευταίος αριθμός: ' + esc(last.n) + ' από ' + esc(nm(last.by)) : 'Ξεκινάει το παιχνίδι') + '</div></div></div>';
       if (mine) {
         h += '<div class="muted">Διάλεξε έναν αριθμό και τον σημειώνουν όλοι:</div><div class="pool">';
-        for (let n = 1; n <= N; n++) if (!calledSet.has(n)) h += '<button class="pick" data-act="call" data-n="' + n + '"' + (busy ? ' disabled' : '') + '>' + n + '</button>';
+        for (let n = 1; n <= POOL; n++) if (!calledSet.has(n)) h += '<button class="pick" data-act="call" data-n="' + n + '"' + (busy ? ' disabled' : '') + '>' + n + '</button>';
         h += '</div>';
       } else {
         h += '<button class="btn" data-act="skip"' + (busy ? ' disabled' : '') + '>Παράλειψη σειράς (αν λείπει ο παίκτης)</button>';
@@ -337,7 +339,7 @@ function render() {
       h += '<p class="notice">Το παιχνίδι ξεκίνησε χωρίς εσένα. Θα παίξεις στον επόμενο γύρο.</p>';
     }
     h += '<div class="panel"><h2>Αριθμοί που ειπώθηκαν</h2><div class="called">';
-    for (let n = 1; n <= N; n++) h += '<span class="chipnum ' + (calledSet.has(n) ? 'on' : 'off') + '">' + n + '</span>';
+    for (let n = 1; n <= POOL; n++) h += '<span class="chipnum ' + (calledSet.has(n) ? 'on' : 'off') + '">' + n + '</span>';
     h += '</div></div>';
   }
   $('#app').innerHTML = h;
@@ -362,7 +364,7 @@ async function onClick(e) {
     card.cells[i] = +b.dataset.n; sel = nextEmpty(i); saveCard(); render();
   } else if (act === 'random') {
     const left = []; const used = new Set(card.cells);
-    for (let n = 1; n <= N; n++) if (!used.has(n)) left.push(n);
+    for (let n = 1; n <= POOL; n++) if (!used.has(n)) left.push(n);
     for (let k = left.length - 1; k > 0; k--) { const j = Math.floor(Math.random() * (k + 1)); [left[k], left[j]] = [left[j], left[k]]; }
     card.cells = card.cells.map(v => v || left.pop()); sel = null; saveCard(); render();
   } else if (act === 'clear') {
