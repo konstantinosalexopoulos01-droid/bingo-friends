@@ -34,13 +34,13 @@ h2{font:700 17px/1.2 var(--font-display);margin:0}
 .chip.turn{border-color:var(--accent);background:var(--accent);color:var(--accent-ink);font-weight:700}
 .chip.ok::after{content:"✓";color:var(--good);font-weight:700}
 .chip.me{font-weight:700}
-.grid{display:grid;grid-template-columns:repeat(5,1fr);gap:6px}
+.grid{display:grid;grid-template-columns:repeat(6,1fr);gap:5px}
 .cell{aspect-ratio:1;border-radius:10px;border:2px solid var(--line);background:var(--bg);color:var(--ink);
-  font:700 clamp(18px,6vw,26px) var(--font-display);display:grid;place-items:center;padding:0;font-variant-numeric:tabular-nums;position:relative}
+  font:700 clamp(15px,5vw,22px) var(--font-display);display:grid;place-items:center;padding:0;font-variant-numeric:tabular-nums;position:relative}
 .cell.empty{border-style:dashed;color:var(--muted)}
 .cell.sel{border-color:var(--accent);box-shadow:0 0 0 3px color-mix(in srgb,var(--accent) 30%,transparent)}
 .cell.hit{background:var(--dauber);border-color:var(--dauber);color:#fff}
-.pool{display:grid;grid-template-columns:repeat(7,1fr);gap:6px}
+.pool{display:grid;grid-template-columns:repeat(6,1fr);gap:6px}
 .pool button,.chipnum{aspect-ratio:1;border-radius:8px;border:1px solid var(--line);background:var(--panel);color:var(--ink);
   font:600 15px var(--font-body);padding:0;display:grid;place-items:center;font-variant-numeric:tabular-nums}
 .pool button.pick{border-color:var(--accent);color:var(--accent);font-weight:700}
@@ -83,15 +83,16 @@ input[type=text],select{font:inherit;color:var(--ink);background:var(--bg);borde
 </main>
 
 <script>
-const N = 25;
+const SIZE = 6, N = SIZE * SIZE, TARGETS = [1, 3, 6];
 const $ = s => document.querySelector(s);
 const esc = s => String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const pad = n => String(n).padStart(3, '0');
 const LINES = (() => {
   const L = [];
-  for (let r = 0; r < 5; r++) L.push([0,1,2,3,4].map(c => r*5 + c));
-  for (let c = 0; c < 5; c++) L.push([0,1,2,3,4].map(r => r*5 + c));
-  L.push([0,6,12,18,24], [4,8,12,16,20]);
+  const idx = [...Array(SIZE).keys()];
+  for (let r = 0; r < SIZE; r++) L.push(idx.map(c => r * SIZE + c));
+  for (let c = 0; c < SIZE; c++) L.push(idx.map(r => r * SIZE + c));
+  L.push(idx.map(i => i * SIZE + i), idx.map(i => i * SIZE + (SIZE - 1 - i)));
   return L;
 })();
 
@@ -108,7 +109,7 @@ myName = lsGet('mpingko-name');
 uid = lsGet('mpingko-uid');
 if (!uid) { uid = 'p' + Math.random().toString(36).slice(2, 10) + Date.now().toString(36); lsSet('mpingko-uid', uid); }
 
-const DEFAULT_META = { round: 1, status: 'lobby', target: 5, order: [] };
+const DEFAULT_META = { round: 1, status: 'lobby', target: 6, order: [] };
 const M = () => meta || DEFAULT_META;
 const cardKey = () => 'mpingko-card-' + room + '-' + uid;
 
@@ -134,7 +135,7 @@ const ID_RE = /^[A-Za-z0-9_-]{1,40}$/, MAX_PLAYERS = 12, MAX_LOG = 3000, MAX_MSG
 const topic = () => 'mpingko-' + room;
 
 function reduce(evs) {
-  const S = { round: 1, status: 'lobby', target: 5, order: [], players: Object.create(null), calls: [], wins: [] };
+  const S = { round: 1, status: 'lobby', target: 6, order: [], players: Object.create(null), calls: [], wins: [] };
   let jc = 0;
   const roundWon = () => S.wins.some(w => w.round === S.round);
   for (const e of evs) {
@@ -146,7 +147,7 @@ function reduce(evs) {
     } else if (e.t === 'ready') {
       if (p[e.u] && S.status === 'lobby') p[e.u].readyRound = e.v === 1 ? S.round : 0;
     } else if (e.t === 'target') {
-      if (S.status === 'lobby' && [1, 3, 5].includes(e.v)) S.target = e.v;
+      if (S.status === 'lobby' && TARGETS.includes(e.v)) S.target = e.v;
     } else if (e.t === 'start') {
       if (S.status !== 'lobby') continue;
       const order = Object.entries(p).filter(([, x]) => x.readyRound === S.round).sort((a, b) => a[1].joinedAt - b[1].joinedAt).map(([id]) => id);
@@ -291,7 +292,7 @@ function render() {
     const ready = ordered().filter(([, p]) => p.readyRound === m.round);
     const full = card.cells.every(Boolean);
     h += '<div class="panel"><h2>Φτιάξε την κάρτα σου</h2>';
-    h += '<p class="muted">Πάτα ένα τετράγωνο και μετά έναν αριθμό από κάτω. Βάλε τους αριθμούς 1–25 όπου θέλεις. Οι άλλοι δεν βλέπουν την κάρτα σου.</p>';
+    h += '<p class="muted">Πάτα ένα τετράγωνο και μετά έναν αριθμό από κάτω. Βάλε τους αριθμούς 1–' + N + ' όπου θέλεις. Οι άλλοι δεν βλέπουν την κάρτα σου.</p>';
     h += renderCard(iReady ? 'play' : 'build', new Set());
     if (!iReady) {
       const used = new Set(card.cells);
@@ -305,7 +306,7 @@ function render() {
     }
     h += '</div>';
     h += '<div class="panel"><h2>Κανόνες γύρου</h2><label class="muted" for="target">Κερδίζει όποιος πρώτος συμπληρώσει</label>' +
-      '<select id="target">' + [1,3,5].map(t => '<option value="' + t + '"' + (m.target === t ? ' selected' : '') + '>' + t + (t === 1 ? ' γραμμή' : ' γραμμές') + (t === 5 ? ' (ΜΠΙΝΓΚΟ)' : '') + '</option>').join('') + '</select>' +
+      '<select id="target">' + TARGETS.map(t => '<option value="' + t + '"' + (m.target === t ? ' selected' : '') + '>' + t + (t === 1 ? ' γραμμή' : ' γραμμές') + (t === 6 ? ' (ΜΠΙΝΓΚΟ)' : '') + '</option>').join('') + '</select>' +
       '<button class="btn primary" data-act="start"' + (iReady && ready.length >= 2 ? '' : ' disabled') + '>Ξεκινάμε (' + ready.length + ' έτοιμοι)</button>' +
       '<p class="muted">Χρειάζονται τουλάχιστον 2 έτοιμοι παίκτες. Στείλε το link σε όσους θέλεις να παίξουν. Μπαίνουν στο δωμάτιο «' + esc(room) + '».</p></div>';
   } else {
