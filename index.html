@@ -79,6 +79,11 @@ input[type=text],select{font:inherit;color:var(--ink);background:var(--bg);borde
 .chatrow .btn{flex:none;padding-inline:12px}
 .btn.rec{background:var(--dauber);border-color:var(--dauber);color:#fff}
 #chatNote{font-size:13px;color:var(--warn);min-height:0}
+#score{display:flex;flex-direction:column;gap:6px}
+#score .row2{display:flex;justify-content:space-between;gap:10px;padding:6px 10px;border-radius:10px;background:var(--bg);border:1px solid var(--line);min-width:0}
+#score .row2 span:first-child{overflow-wrap:anywhere;min-width:0}
+#score .row2.lead{border-color:var(--good)}
+#score .row2 b{font-variant-numeric:tabular-nums}
 #toasts{position:fixed;left:0;right:0;top:0;z-index:50;display:flex;flex-direction:column;align-items:center;gap:8px;pointer-events:none;
   padding:calc(env(safe-area-inset-top,0px) + 10px) max(16px,env(safe-area-inset-right,0px)) 0 max(16px,env(safe-area-inset-left,0px))}
 .toast{background:var(--dauber);color:#fff;font:700 20px/1.25 var(--font-display);padding:12px 20px;border-radius:14px;text-align:center;
@@ -181,7 +186,7 @@ const ID_RE = /^[A-Za-z0-9_-]{1,40}$/, MAX_PLAYERS = 12, MAX_LOG = 3000, MAX_MSG
 const topic = () => 'mpingko-' + room;
 
 function reduce(evs) {
-  const S = { round: 1, status: 'lobby', target: 6, order: [], players: Object.create(null), calls: [], wins: [], lines: Object.create(null), feed: [] };
+  const S = { round: 1, status: 'lobby', target: 6, order: [], players: Object.create(null), calls: [], wins: [], lines: Object.create(null), feed: [], scores: Object.create(null) };
   let jc = 0;
   const roundWon = () => S.wins.some(w => w.round === S.round);
   for (const e of evs) {
@@ -210,7 +215,7 @@ function reduce(evs) {
       S.calls.push({ round: S.round, seq: rc.length, n: e.n, by: e.u });
     } else if (e.t === 'win') {
       if (S.status === 'playing' && S.order.includes(e.u) && !S.wins.some(w => w.round === S.round && w.id === e.u))
-        S.wins.push({ round: S.round, id: e.u, name: (p[e.u] || {}).name || '' });
+        { S.wins.push({ round: S.round, id: e.u, name: (p[e.u] || {}).name || '' }); S.scores[e.u] = (S.scores[e.u] || 0) + 1; }
     } else if (e.t === 'lines') {
       if (S.status === 'playing' && !roundWon() && S.order.includes(e.u) && Number.isInteger(e.v) && e.v >= 1 && e.v <= LINES.length && e.v > (S.lines[e.u] || 0)) {
         S.lines[e.u] = e.v;
@@ -224,7 +229,7 @@ function reduce(evs) {
 }
 
 let log = [], seen = new Set(), joinSent = false, winSentFor = 0, linesSent = 0, linesRound = 0, feed = [];
-let live = false, feedShown = 0, winShownRound = 0, overTimer = null;
+let scores = {}, live = false, feedShown = 0, winShownRound = 0, overTimer = null;
 function send(ev) {
   return fetch(HOST + topic(), { method: 'POST', body: JSON.stringify(Object.assign({}, ev, { u: uid, ts: Date.now() })) })
     .catch(() => { $('#round').textContent = 'Χωρίς σύνδεση, δοκίμασε ξανά'; });
@@ -233,7 +238,7 @@ function apply() {
   log.sort((a, b) => a.time - b.time || ((+a.ev.ts || 0) - (+b.ev.ts || 0)) || (a.id < b.id ? -1 : 1));
   const S = reduce(log.map(x => x.ev));
   meta = { round: S.round, status: S.status, target: S.target, order: S.order };
-  players = S.players; calls = S.calls; wins = S.wins; feed = S.feed;
+  players = S.players; calls = S.calls; wins = S.wins; feed = S.feed; scores = S.scores;
   syncCardRound(); checkWin(); announce(); render(); renderChat();
 }
 function connect() {
@@ -514,6 +519,10 @@ function render() {
     h += '<span class="' + c.join(' ') + '">' + esc(p.name || '?') + (id === uid ? ' (εσύ)' : '') + '</span>';
   });
   h += '</div></div>';
+
+  const rank = ordered().map(([id, p]) => ({ id, name: p.name || '?', w: scores[id] || 0 })).sort((a, b) => b.w - a.w);
+  h += '<div class="panel"><h2>Σκορ (νίκες)</h2><div id="score">' + rank.map((r, i) =>
+    '<div class="row2' + (r.w && r.w === rank[0].w ? ' lead' : '') + '"><span>' + esc(r.name) + (r.id === uid ? ' (εσύ)' : '') + '</span><b>' + r.w + '</b></div>').join('') + '</div></div>';
 
   if (!playing) {
     const ready = ordered().filter(([, p]) => p.readyRound === m.round);
