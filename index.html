@@ -252,13 +252,13 @@ function announce() {
   const w = roundWins();
   if (w.length && winShownRound !== m.round) {
     winShownRound = m.round;
-    showOver(w.some(x => x.id === uid) ? 'Σας γάμησε!' : 'Ο ' + (w[0].name || 'Παίκτης') + ' γαμάει!');
+    showOver(w.some(x => x.id === uid) ? 'Γάμησες!' : 'Σας γάμησε ο ' + (w[0].name || 'Παίκτης') + '!');
   }
   for (; feedShown < feed.length; feedShown++) {
     const f = feed[feedShown];
     if (f.round !== m.round || f.v >= m.target) continue;
     const lbl = f.v + (f.v === 1 ? ' γραμμή' : ' γραμμές') + ' από ' + m.target;
-    if (f.id === uid) toast('Γραμμή! <small>' + esc(lbl) + '</small>', true);
+    if (f.id === uid) toast('Γαμάς! <small>' + esc(lbl) + '</small>', true);
     else toast('Ο ' + esc(f.name || 'Παίκτης') + ' γαμάει! <small>' + esc(lbl) + '</small>', false);
   }
 }
@@ -382,8 +382,8 @@ function render() {
     const last = callsR.filter(c => c.n).slice(-1)[0];
     if (win.length) {
       const iWon = win.some(w => w.id === uid);
-      h += '<div class="panel win">' + (iWon ? '<div class="big">Σας γάμησε!</div>' : '') +
-        win.filter(w => w.id !== uid).map(w => '<div class="big">Ο ' + esc(w.name || nm(w.id)) + ' γαμάει!</div>').join('') +
+      h += '<div class="panel win">' + (iWon ? '<div class="big">Γάμησες!</div>' : '') +
+        win.filter(w => w.id !== uid).map(w => '<div class="big">Σας γάμησε ο ' + esc(w.name || nm(w.id)) + '!</div>').join('') +
         '<button class="btn primary" data-act="newround">Νέος γύρος</button></div>';
     } else {
       const mine = turnId === uid;
