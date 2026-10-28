@@ -84,6 +84,14 @@ input[type=text],select{font:inherit;color:var(--ink);background:var(--bg);borde
 #score .row2 span:first-child{overflow-wrap:anywhere;min-width:0}
 #score .row2.lead{border-color:var(--good)}
 #score .row2 b{font-variant-numeric:tabular-nums}
+#flash{position:fixed;inset:0;z-index:70;pointer-events:none;background:var(--accent);opacity:0}
+#flash.on{animation:flash 1.2s linear}
+@keyframes flash{0%{opacity:.6}16%{opacity:0}33%{opacity:.6}50%{opacity:0}66%{opacity:.6}100%{opacity:0}}
+.called.mine .chipnum.off{opacity:1;color:var(--ink);border-color:var(--accent);background:var(--panel);cursor:pointer}
+.chipnum.sel{background:var(--accent)!important;color:var(--accent-ink)!important;border-color:var(--accent);box-shadow:0 0 0 3px color-mix(in srgb,var(--accent) 35%,transparent);transform:scale(1.12);position:relative;z-index:1}
+.panel.myturn{border-color:var(--accent);box-shadow:0 0 0 2px color-mix(in srgb,var(--accent) 30%,transparent)}
+.pickinfo{font-weight:700;color:var(--accent)}
+.cell.tap{cursor:pointer}
 #toasts{position:fixed;left:0;right:0;top:0;z-index:50;display:flex;flex-direction:column;align-items:center;gap:8px;pointer-events:none;
   padding:calc(env(safe-area-inset-top,0px) + 10px) max(16px,env(safe-area-inset-right,0px)) 0 max(16px,env(safe-area-inset-left,0px))}
 .toast{background:var(--dauber);color:#fff;font:700 20px/1.25 var(--font-display);padding:12px 20px;border-radius:14px;text-align:center;
@@ -102,10 +110,11 @@ input[type=text],select{font:inherit;color:var(--ink);background:var(--bg);borde
 @keyframes boom{from{transform:scale(.2) rotate(-8deg);opacity:0}to{transform:none;opacity:1}}
 @keyframes pulse{50%{transform:scale(1.06)}}
 @keyframes fall{to{transform:translateY(110vh) rotate(720deg)}}
-@media (prefers-reduced-motion:reduce){.bar i{transition:none}.toast,#over .msg,#over,#over i{animation:none}.toast{opacity:1}#over i{display:none}}
+@media (prefers-reduced-motion:reduce){#flash.on{animation:none}.chipnum.sel{transform:none}.bar i{transition:none}.toast,#over .msg,#over,#over i{animation:none}.toast{opacity:1}#over i{display:none}}
 </style>
 
 <div id="toasts" aria-live="polite"></div>
+<div id="flash"></div>
 <div id="over" hidden role="alertdialog" aria-live="assertive"><div><div class="msg" id="overMsg"></div><div class="sub">Πάτα για να κλείσει</div></div></div>
 <main>
   <div class="top"><h1>Μπίνγκο</h1><span class="round" id="round"></span></div>
@@ -229,7 +238,7 @@ function reduce(evs) {
 }
 
 let log = [], seen = new Set(), joinSent = false, winSentFor = 0, linesSent = 0, linesRound = 0, feed = [];
-let scores = {}, live = false, feedShown = 0, winShownRound = 0, overTimer = null;
+let pick = 0, turnKey = '', beepAudio = null, scores = {}, live = false, feedShown = 0, winShownRound = 0, overTimer = null;
 function send(ev) {
   return fetch(HOST + topic(), { method: 'POST', body: JSON.stringify(Object.assign({}, ev, { u: uid, ts: Date.now() })) })
     .catch(() => { $('#round').textContent = 'Χωρίς σύνδεση, δοκίμασε ξανά'; });
@@ -258,6 +267,42 @@ function connect() {
   es.onopen = () => setTimeout(() => { if (!live) { live = true; feedShown = feed.length; winShownRound = roundWins().length ? M().round : 0; } if (!players[uid] && myName && !joinSent) { joinSent = true; send({ t: 'join', name: myName }); } }, 1500);
 }
 
+function makeBeep() {
+  const sr = 22050, notes = [[880, .16], [1175, .16], [1568, .3]], gap = Math.floor(sr * .02);
+  const total = notes.reduce((a, n) => a + Math.floor(sr * n[1]) + gap, 0), pcm = new Int16Array(total);
+  let o = 0;
+  for (const [f, d] of notes) {
+    const len = Math.floor(sr * d);
+    for (let i = 0; i < len; i++) pcm[o + i] = Math.sin(2 * Math.PI * f * i / sr) * Math.min(1, i / 200, (len - i) / 500) * 0.55 * 32767;
+    o += len + gap;
+  }
+  const buf = new ArrayBuffer(44 + pcm.length * 2), v = new DataView(buf);
+  const w = (at, str) => { for (let k = 0; k < str.length; k++) v.setUint8(at + k, str.charCodeAt(k)); };
+  w(0, 'RIFF'); v.setUint32(4, 36 + pcm.length * 2, true); w(8, 'WAVEfmt '); v.setUint32(16, 16, true); v.setUint16(20, 1, true); v.setUint16(22, 1, true);
+  v.setUint32(24, sr, true); v.setUint32(28, sr * 2, true); v.setUint16(32, 2, true); v.setUint16(34, 16, true); w(36, 'data'); v.setUint32(40, pcm.length * 2, true);
+  new Int16Array(buf, 44).set(pcm);
+  return new Audio(URL.createObjectURL(new Blob([buf], { type: 'audio/wav' })));
+}
+/* Ο browser επιτρέπει ήχο μόνο μετά από πάτημα, γι' αυτό «ξεκλειδώνουμε» το audio στο πρώτο tap. */
+function unlockBeep() {
+  try {
+    if (!beepAudio) beepAudio = makeBeep();
+    if (beepAudio.dataset.ok) return;
+    beepAudio.muted = true;
+    beepAudio.play().then(() => { beepAudio.pause(); beepAudio.currentTime = 0; beepAudio.muted = false; beepAudio.dataset.ok = '1'; }).catch(() => { beepAudio.muted = false; });
+  } catch (e) {}
+}
+document.addEventListener('pointerdown', unlockBeep, { passive: true });
+function myTurnAlert() {
+  const f = $('#flash'); f.classList.remove('on'); void f.offsetWidth; f.classList.add('on');
+  try { if (beepAudio) { beepAudio.currentTime = 0; beepAudio.play().catch(() => {}); } } catch (e) {}
+  try { navigator.vibrate && navigator.vibrate([200, 100, 200]); } catch (e) {}
+}
+function myTurnNow() {
+  const m = M(), rc = roundCalls();
+  return m.status === 'playing' && !roundWins().length && m.order.length > 0 && m.order[rc.length % m.order.length] === uid;
+}
+
 function toast(html, self) {
   const t = document.createElement('div');
   t.className = 'toast' + (self ? ' self' : '');
@@ -280,6 +325,10 @@ function showOver(text) {
   try { navigator.vibrate && navigator.vibrate([120, 60, 120, 60, 200]); } catch (e) {}
 }
 function announce() {
+  const mineKey = myTurnNow() ? M().round + ':' + roundCalls().length : '';
+  const prevKey = turnKey; turnKey = mineKey;
+  if (mineKey !== prevKey) pick = 0;
+  if (live && mineKey && mineKey !== prevKey) myTurnAlert();
   if (!live) return;
   const m = M();
   const w = roundWins();
@@ -483,14 +532,16 @@ function checkWin() {
 
 function ordered() { return Object.entries(players).sort((a, b) => (a[1].joinedAt || 0) - (b[1].joinedAt || 0)); }
 
-function renderCard(mode, calledSet) {
+function renderCard(mode, calledSet, canPick) {
   let h = '<div class="grid">';
   card.cells.forEach((v, i) => {
     const cls = ['cell'];
     if (!v) cls.push('empty');
     if (mode === 'build' && sel === i) cls.push('sel');
     if (mode === 'play' && v && calledSet.has(v)) cls.push('hit');
-    h += '<button class="' + cls.join(' ') + '" data-act="cell" data-i="' + i + '"' + (mode === 'play' ? ' tabindex="-1"' : '') + '>' + (v || '') + '</button>';
+    const tap = mode === 'play' && canPick && v && !calledSet.has(v);
+    if (tap) { cls.push('tap'); if (pick === v) cls.push('sel'); }
+    h += '<button class="' + cls.join(' ') + '" ' + (tap ? 'data-act="pick" data-n="' + v + '"' : 'data-act="cell" data-i="' + i + '"') + (mode === 'play' && !tap ? ' tabindex="-1"' : '') + '>' + (v || '') + '</button>';
   });
   return h + '</div>';
 }
@@ -510,21 +561,23 @@ function render() {
   const iReady = me.readyRound === m.round;
   const nm = id => (players[id] && players[id].name) || 'Παίκτης';
 
-  let h = '<div class="panel"><h2>Παίκτες</h2><div class="players">';
+  let ph = '<div class="panel"><h2>Παίκτες</h2><div class="players">';
   ordered().forEach(([id, p]) => {
     const c = ['chip'];
     if (id === uid) c.push('me');
     if (!playing && p.readyRound === m.round) c.push('ok');
     if (playing && !win.length && id === turnId) c.push('turn');
-    h += '<span class="' + c.join(' ') + '">' + esc(p.name || '?') + (id === uid ? ' (εσύ)' : '') + '</span>';
+    ph += '<span class="' + c.join(' ') + '">' + esc(p.name || '?') + (id === uid ? ' (εσύ)' : '') + '</span>';
   });
-  h += '</div></div>';
+  ph += '</div></div>';
 
   const rank = ordered().map(([id, p]) => ({ id, name: p.name || '?', w: scores[id] || 0 })).sort((a, b) => b.w - a.w);
-  h += '<div class="panel"><h2>Σκορ (νίκες)</h2><div id="score">' + rank.map((r, i) =>
+  let sh = '<div class="panel"><h2>Σκορ (νίκες)</h2><div id="score">' + rank.map((r, i) =>
     '<div class="row2' + (r.w && r.w === rank[0].w ? ' lead' : '') + '"><span>' + esc(r.name) + (r.id === uid ? ' (εσύ)' : '') + '</span><b>' + r.w + '</b></div>').join('') + '</div></div>';
+  let h = '';
 
   if (!playing) {
+    h += ph + sh;
     const ready = ordered().filter(([, p]) => p.readyRound === m.round);
     const full = card.cells.every(Boolean);
     h += '<div class="panel"><h2>Φτιάξε την κάρτα σου</h2>';
@@ -548,35 +601,40 @@ function render() {
   } else {
     const lines = inGame ? lineCount(card.cells, calledSet) : 0;
     const last = callsR.filter(c => c.n).slice(-1)[0];
+    const mine = turnId === uid && !win.length;
     if (win.length) {
       const iWon = win.some(w => w.id === uid);
       h += '<div class="panel win">' + (iWon ? '<div class="big">Γάμησες!</div>' : '') +
         win.filter(w => w.id !== uid).map(w => '<div class="big">Σας γάμησε ο ' + esc(w.name || nm(w.id)) + '!</div>').join('') +
         '<button class="btn primary" data-act="newround">Νέος γύρος</button></div>';
     } else {
-      const mine = turnId === uid;
-      h += '<div class="panel"><div class="last">' + (last ? '<div class="num">' + esc(last.n) + '</div>' : '') +
+      h += '<div class="panel' + (mine ? ' myturn' : '') + '"><div class="last">' + (last ? '<div class="num">' + esc(last.n) + '</div>' : '') +
         '<div><div class="big">' + (mine ? 'Η σειρά σου!' : 'Σειρά του: ' + esc(nm(turnId))) + '</div>' +
         '<div class="muted">' + (last ? 'Τελευταίος αριθμός: ' + esc(last.n) + ' από ' + esc(nm(last.by)) : 'Ξεκινάει το παιχνίδι') + '</div></div></div>';
       if (mine) {
-        h += '<div class="muted">Διάλεξε έναν αριθμό και τον σημειώνουν όλοι:</div><div class="pool">';
-        for (let n = 1; n <= POOL; n++) if (!calledSet.has(n)) h += '<button class="pick" data-act="call" data-n="' + n + '"' + (busy ? ' disabled' : '') + '>' + n + '</button>';
-        h += '</div>';
+        h += pick && !calledSet.has(pick)
+          ? '<div class="pickinfo">Διάλεξες το ' + pick + '. Πάτα το ξανά για να το πεις.</div>'
+          : '<div class="muted">Πάτα έναν αριθμό στον πίνακα ή στην κάρτα σου για να τον διαλέξεις, και πάτα τον ξανά για να τον πεις.</div>';
       } else {
         h += '<button class="btn" data-act="skip"' + (busy ? ' disabled' : '') + '>Παράλειψη σειράς (αν λείπει ο παίκτης)</button>';
       }
       h += '</div>';
     }
+    h += '<div class="panel"><h2>Αριθμοί</h2><div class="called' + (mine ? ' mine' : '') + '">';
+    for (let n = 1; n <= POOL; n++) {
+      if (calledSet.has(n)) h += '<span class="chipnum on">' + n + '</span>';
+      else if (mine) h += '<button class="chipnum off' + (pick === n ? ' sel' : '') + '" data-act="pick" data-n="' + n + '"' + (busy ? ' disabled' : '') + '>' + n + '</button>';
+      else h += '<span class="chipnum off">' + n + '</span>';
+    }
+    h += '</div></div>';
     if (inGame) {
-      h += '<div class="panel"><h2>Η κάρτα σου</h2>' + renderCard('play', calledSet) +
+      h += '<div class="panel"><h2>Η κάρτα σου</h2>' + renderCard('play', calledSet, mine) +
         '<div class="row"><span class="muted">Γραμμές: ' + lines + ' / ' + m.target + '</span></div>' +
         '<div class="bar"><i style="width:' + Math.min(100, lines / m.target * 100) + '%"></i></div></div>';
     } else {
       h += '<p class="notice">Το παιχνίδι ξεκίνησε χωρίς εσένα. Θα παίξεις στον επόμενο γύρο.</p>';
     }
-    h += '<div class="panel"><h2>Αριθμοί που ειπώθηκαν</h2><div class="called">';
-    for (let n = 1; n <= POOL; n++) h += '<span class="chipnum ' + (calledSet.has(n) ? 'on' : 'off') + '">' + n + '</span>';
-    h += '</div></div>';
+    h += ph + sh;
   }
   $('#app').innerHTML = h;
 }
@@ -612,6 +670,13 @@ async function onClick(e) {
     send({ t: 'ready', v: 0 });
   } else if (act === 'start') {
     send({ t: 'start' });
+  } else if (act === 'pick') {
+    const n = +b.dataset.n;
+    if (!myTurnNow() || busy || !(n >= 1 && n <= POOL) || roundCalls().some(c => c.n === n)) return;
+    if (pick !== n) { pick = n; render(); return; }
+    busy = true; pick = 0; render();
+    await send({ t: 'call', n });
+    setTimeout(() => { busy = false; render(); }, 600);
   } else if (act === 'call' || act === 'skip') {
     if (busy) return; busy = true; render();
     await send({ t: 'call', n: act === 'call' ? +b.dataset.n : 0 });
